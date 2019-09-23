@@ -23,7 +23,8 @@ end module QXD_data
 module QXD_subs
    implicit none
 contains
-
+   !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
+   !%% GENERAL SET UP %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
    ! Sets the arrays needed for QXD.
    subroutine qxd_alloc_arrays(n_qm, n_mm)
       use QXD_data, only: qxd_s, qxd_alpha0, qxd_alphaq, qxd_zeta0, qxd_zetaq,&
@@ -110,24 +111,29 @@ contains
       call qxd_set_mm_params(n_qm, n_mm, LJ_epsilon, LJ_sigma, atom_z)
    end subroutine qxd_set_params
 
-   ! Adds QXD to atomic-basis Fock matrix, and outputs energy term E_D.
-   subroutine qxd_fock_x(energ_x, fock_op, m_size, pos)
+   !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
+   !%% FOCK - ENERGY TERMS %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
+   ! Adds exchange corrections to atomic-basis Fock matrix, and outputs energy
+   ! term E_x.
+   subroutine qxd_fock_x(energ_x, fock_op, m_size, pos, Smat, atom_of_func)
       use QXD_data, only: qxd_Q, qxd_s, qxd_zeta0, qxd_zetaq
       implicit none
-      real(kind=8)  , intent(in)    :: pos(:,:)
+      integer       , intent(in)    :: m_size, atom_of_func(:)
+      real(kind=8)  , intent(in)    :: pos(:,:), Smat(:,:)
       real(kind=8)  , intent(out)   :: energ_x
       type(operator), intent(inout) :: fock
       
-      integer      :: iatom, jatom, n_qm, n_tot
-      real(kind=8) :: dist_ij, zeta_i, zeta_j, zeta_ij, delta_ij, delta_ji
-      real(kind=8), allocatable :: f_mat
+      integer      :: iatom, jatom, n_qm, n_tot, ifunct, jfunct
+      real(kind=8) :: dist_ij, zeta_i, zeta_j, zeta_ij, delta_ij, delta_ji, &
+                      dzeta_ij, ddelta_ij, ddelta_ji
+      real(kind=8), allocatable :: f_mat, dEx_dQ
 
       energ_x = 0.0D0
-      allocate(f_mat(m_size, m_size))
-      call fock%Gets_data_AO(f_mat)
-
       n_qm  = size(qxd_Q,1)
       n_tot = size(qxd_s,1)
+      allocate(f_mat(m_size, m_size), dEx_dQ(n_qm))
+      call fock%Gets_data_AO(f_mat)
+
       do iatom = 1, n_qm
          do jatom = n_qm, n_tot
             ! First part - energy contributions.
@@ -139,18 +145,46 @@ contains
             delta_ij = delta_ab(zeta_i, zeta_j, dist_ij)
             delta_ji = delta_ab(zeta_j, zeta_i, dist_ij)
 
-            energ_x = energ_x + qxd_s(iatom) * qxd_s(iatom) * zeta_ij * &
+            energ_x = energ_x + qxd_s(iatom) * qxd_s(jatom) * zeta_ij * &
                                 (delta_ij - delta_ji)
 
-            ! Second part - Fock contributions.
+            ! Second part - Fock contributions. These are obtained by
+            ! separating dE/dRho as dE/dZi * dZi/dQi * dQi/dRho.
+            ! dZi/dQi is simply (- Zqi * Zi). The "-" is ommited since
+            ! afterwards dQi/dRho < 0, so it gets cancelled.
+            dzeta_ij  = dzeta_di(zeta_i, zeta_j)
+            ddelta_ij = ddelta_di(zeta_i, zeta_j, dist_ij, delta_ij)
+            ddelta_ji = ddelta_dj(zeta_j, zeta_i, dist_ij, delta_ji)
+
+            dEx_dQ(iatom) = zeta_ij  * (ddelta_ij - ddelta_ji) + &
+                            dzeta_ij * (delta_ij  - delta_ji)
+            dEx_dQ(iatom) = dEx_dQ(iatom) * qxd_zetaq(iatom) * zeta_i &
+                            * qxd_s(iatom)  * qxd_s(jatom)
          enddo
       enddo
 
+      ! Adds fock contributions to fock matrix.
+      do ifunct = 1, M
+         do jfunct = ifunct, M
+            if (atom_of_func(ifunct) == atom_of_func(jfunct)) then
+               f_mat(ifunct, jfunct) = f_mat(ifunct,jfunct) + &
+                                       dEx_dQ(atom_of_func(ifunct)) * &
+                                       Smat(ifunct, jfunct)
+            else
+               f_mat(ifunct, jfunct) = f_mat(ifunct,jfunct) + &
+                                       dEx_dQ(atom_of_func(ifunct)) * &
+                                       Smat(ifunct, jfunct) * 0.5D0
+            endif
+            f_mat(jfunct, ifunct) = f_mat(ifunct, jfunct)
+         enddo
+      enddo
+      call fock%Sets_data_AO(f_mat)
 
-      deallocate(f_mat)
+      deallocate(f_mat, dEx_dQ)
    end subroutine qxd_fock_x
 
-   ! Helper functions
+   !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
+   !%% HELPER FUNCTIONS %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
    function zeta_ab(z_i, z_j) result(zeta_out)
       use constants_mod, only: PI
       implicit none
@@ -183,4 +217,39 @@ contains
       delta_out = delta_out * z_j * exp(- z_i * d_ij) / d_ij
       return
    end function delta_ab
+
+   ! Derives Zij only with respect to Zi.
+   function dzeta_di(z_i, z_j) result(dzeta_out)
+      implicit none
+      real(kind=8), intent(in) :: z_i, z_j
+      real(kind=8)             :: dzeta_out
+
+      dzeta_out = (z_i * z_i + z_j * z_j) / &
+                  (z_i * z_i - z_j * z_j) ** 4                  
+      dzeta_out = - 3.0D0 * (z_j ** 3) * (z_i * z_i) * dzeta_out
+      return
+   end function
+
+   ! Derives dij with respect to Zi.
+   function ddelta_di(z_i, z_j, d_ij, delta_ij) result(ddelta_out)
+      implicit none
+      real(kind=8), intent(in) :: z_i, z_j, d_ij, delta_ij
+      real(kind=8)             :: ddelta_out
+
+      ddelta_out = - (z_j / d_ij) * (4.0D0 + 2.0D0 * d_ij * z_i) &
+                    * exp(-d_ij* z_i)
+      ddelta_out = d_ij * delta_ij + ddelta_out
+      return
+   end function
+
+   ! Derives dij with respect to Zj.
+   function ddelta_di(z_i, z_j, d_ij, delta_ij) result(ddelta_out)
+      implicit none
+      real(kind=8), intent(in) :: z_i, z_j, d_ij, delta_ij
+      real(kind=8)             :: ddelta_out
+
+      ddelta_out = delta_ij / z_j - 2.0D0 * z_j * z_j * exp(-d_ij * z_i)
+      return
+   end function
+
 end module QXD_subs
