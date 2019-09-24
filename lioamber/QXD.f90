@@ -206,8 +206,9 @@ contains
       type(operator), intent(inout) :: fock
       
       integer      :: iatom, jatom, n_qm, n_tot, ifunct, jfunct
-      real(kind=8) :: dist_ij, zeta_i, zeta_j, zeta_ij, delta_ij, delta_ji, &
-                      dzeta_ij, ddelta_ij, ddelta_ji
+      real(kind=8) :: dist_ij, zeta_i, zeta_j, delta_ij, delta_ji, &
+                      eta_i, eta_j, c6_ij, &
+                      ddelta_ij, ddelta_ji, dc6_ij
       real(kind=8), allocatable :: f_mat, dEd_dQ
 
       energ_d = 0.0D0
@@ -224,8 +225,9 @@ contains
             alpha_j  = qxd_alpha0(jatom)
 
             ! Eqs. 22, 23 and 16.
-            c6_ij = c6_ab(alpha_i, alpha_j, qxd_neff0(iatom), qxd_neff0(iatom),&
-                          qxd_Q(iatom))
+            eta_i = sqrt((neff_i - q_i) / a_i)
+            eta_j = sqrt(neff_j / a_j)
+            c6_ij = c6_ab(alpha_i, alpha_j, eta_i, eta_j)
             
             ! Eqs. 15 and 20.          
             zeta_i   = qxd_zeta0(iatom) * exp(- qxd_zetaq(iatom) * qxd_Q(iatom))
@@ -243,11 +245,16 @@ contains
             energ_d = energ_d - s6_ij * c6_ij / (dist_ij ** 6)
 
             ! Second part - Fock contributions. These are obtained by
-            ! separating dE/dRho as dE/dZi * dZi/dQi * dQi/dRho.
-            ! dZi/dQi is simply (- Zqi * Zi).
-            dzeta_ij  = dzeta_di(zeta_i, zeta_j)
+            ! separating dE/dRho as dE/dQi * dQi/dRho.
+            ! dZi/dQi is simply (- Zqi * Zi) and the same goes for alpha.
             ddelta_ij = ddelta_di(zeta_i, zeta_j, dist_ij, delta_ij)
             ddelta_ji = ddelta_dj(zeta_j, zeta_i, dist_ij, delta_ji)
+
+
+
+
+
+
 
             dEd_dQ(iatom) = zeta_ij  * (ddelta_ij - ddelta_ji) + &
                             dzeta_ij * (delta_ij  - delta_ji)
@@ -311,13 +318,10 @@ contains
       return
    end function delta_ab
 
-   function c6_ab(a_i, a_j, neff_i, neff_j, q_i) result(c6_out)
+   function c6_ab(a_i, a_j, eta_i, eta_j) result(c6_out)
       implicit none
-      real(kind=8), intent(in) :: a_i, a_j, neff_i, neff_j, q_i
-      real(kind=8)             :: c6_out, eta_i, eta_j
-
-      eta_i = sqrt((neff_i - q_i) / a_i)
-      eta_j = sqrt(neff_j / a_j)
+      real(kind=8), intent(in) :: a_i, a_j, eta_i, eta_j
+      real(kind=8)             :: c6_out
 
       c6_out = 1.5D0 * a_i * a_j * eta_i * eta_j / (eta_i + eta_j)
       return
@@ -378,7 +382,7 @@ contains
    end function
 
    ! Derives dij with respect to Zj.
-   function ddelta_di(z_i, z_j, d_ij, delta_ij) result(ddelta_out)
+   function ddelta_dj(z_i, z_j, d_ij, delta_ij) result(ddelta_out)
       implicit none
       real(kind=8), intent(in) :: z_i, z_j, d_ij, delta_ij
       real(kind=8)             :: ddelta_out
@@ -386,5 +390,18 @@ contains
       ddelta_out = delta_ij / z_j - 2.0D0 * z_j * z_j * exp(-d_ij * z_i)
       return
    end function
+
+   ! Derives c6 with respect to Qi.
+   function dc6_dqi(a_i, a_qi, e_i, e_j, c6_ij) result(dc6_out)
+      implicit none
+      real(kind=8), intent(in) :: a_i, a_qi, e_i, e_j, c6_ij
+      real(kind=8)             :: dc6_out
+
+      dc6_out = 2.0D0 * e_i * e_i * (e_i + e_j) * a_i
+      dc6_out = (a_qi - 1.0D0) * e_j / dc6_out
+
+      dc6_out = c6_ij * (dc6_out - a_qi)
+      return
+   end function dc6_dqi
 
 end module QXD_subs
