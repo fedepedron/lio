@@ -12,6 +12,7 @@ module QXD_data
    real(kind=8), allocatable :: qxd_Q(:)
 
    real(kind=8), allocatable :: qxd_s(:)
+   real(kind=8), allocatable :: qxd_neff0(:)
    real(kind=8), allocatable :: qxd_zeta0(:)
    real(kind=8), allocatable :: qxd_zetaq(:)
    real(kind=8), allocatable :: qxd_alpha0(:)
@@ -28,19 +29,21 @@ contains
    ! Sets the arrays needed for QXD.
    subroutine qxd_alloc_arrays(n_qm, n_mm)
       use QXD_data, only: qxd_s, qxd_alpha0, qxd_alphaq, qxd_zeta0, qxd_zetaq,&
-                          qxd_qm_allocated
+                          qxd_neff0, qxd_qm_allocated
       implicit none
       integer, intent(in) :: n_qm, n_mm
       integer :: n_tot
 
       n_tot = n_qm + n_mm
       if (allocated(qxd_s)     ) deallocate(qxd_s)
+      if (allocated(qxd_neff0) ) deallocate(qxd_neff0)
       if (allocated(qxd_zeta0) ) deallocate(qxd_zeta0)
       if (allocated(qxd_zetaq) ) deallocate(qxd_zetaq)
       if (allocated(qxd_alpha0)) deallocate(qxd_alpha0)
       if (allocated(qxd_alphaq)) deallocate(qxd_alphaq)
 
       allocate(qxd_s(n_tot)     ); qxd_s      = 0.0D0
+      allocate(qxd_neff0(n_qm)  ); qxd_neff0  = 0.0D0
       allocate(qxd_zeta0(n_tot) ); qxd_zeta0  = 0.0D0
       allocate(qxd_zetaq(n_tot) ); qxd_zetaq  = 0.0D0
       allocate(qxd_alpha0(n_tot)); qxd_alpha0 = 0.0D0
@@ -50,7 +53,7 @@ contains
    end subroutine qxd_alloc_arrays
 
    subroutine qxd_alloc_qm_arrays(n_qm)
-      use QXD_data, only: qxd_Q, qxd_qm_allocated
+      use QXD_data, only: qxd_Q, qxd_neff0, qxd_qm_allocated
       implicit none
       integer, intent(in) :: n_qm
       
@@ -62,14 +65,17 @@ contains
 
    ! Gets QXD parameters for the QM region.
    subroutine qxd_set_qm_params(n_qm, atom_z)
-      use QXD_data, only: qxd_s, qxd_zeta0, qxd_zetaq, qxd_alpha0, qxd_alphaq
-      use QXD_refs, only: ref_s, ref_zeta0, ref_zetaq, ref_alpha0, ref_alphaq
+      use QXD_data, only: qxd_s, qxd_zeta0, qxd_zetaq, qxd_alpha0, qxd_alphaq,&
+                          qxd_neff0
+      use QXD_refs, only: ref_s, ref_zeta0, ref_zetaq, ref_alpha0, ref_alphaq,&
+                          ref_neff0
       implicit none
       integer, intent(in) :: n_qm, atom_z(:)
       integer :: iatom
 
       do iatom = 1, n_qm
          qxd_s(iatom)      = ref_s(atom_z(iatom))
+         qxd_neff0(iatom)  = ref_neff0(atom_z(iatom))
          qxd_zeta0(iatom)  = ref_zeta0(atom_z(iatom))
          qxd_zetaq(iatom)  = ref_zetaq(atom_z(iatom))
          qxd_alpha0(iatom) = ref_alpha0(atom_z(iatom))
@@ -98,6 +104,7 @@ contains
 
          qxd_zetaq(iatom)  = 0.0D0
          qxd_alphaq(iatom) = 0.0D0
+         qxd_neff0(iatom)  = ref_neff0(atom_z(iatom))
       enddo
    end subroutine qxd_set_mm_params
 
@@ -137,14 +144,19 @@ contains
       do iatom = 1, n_qm
          do jatom = n_qm, n_tot
             ! First part - energy contributions.
+            ! Eq. 15.
             zeta_i  = qxd_zeta0(iatom) * exp(- qxd_zetaq(iatom) * qxd_Q(iatom))
             zeta_j  = qxd_zeta0(jatom)
+
+            ! Eq. 21.
             zeta_ij = zeta_ab(zeta_i, zeta_j)
 
+            ! Eq. 20.
             dist_ij  = dist(pos(iatom,:), pos(jatom,:))
             delta_ij = delta_ab(zeta_i, zeta_j, dist_ij)
             delta_ji = delta_ab(zeta_j, zeta_i, dist_ij)
 
+            ! Eq. 18.
             energ_x = energ_x + qxd_s(iatom) * qxd_s(jatom) * zeta_ij * &
                                 (delta_ij - delta_ji)
 
@@ -163,7 +175,7 @@ contains
          enddo
       enddo
 
-      ! Adds fock contributions to fock matrix.
+      ! Adds fock contributions to fock matrix (eqs. 27-28).
       do ifunct = 1, M
          do jfunct = ifunct, M
             if (atom_of_func(ifunct) == atom_of_func(jfunct)) then
@@ -182,6 +194,87 @@ contains
 
       deallocate(f_mat, dEx_dQ)
    end subroutine qxd_fock_x
+
+   ! Adds dispersion corrections to atomic-basis Fock matrix, and outputs energy
+   ! term E_d.
+   subroutine qxd_fock_d(energ_x, fock_op, m_size, pos, Smat, atom_of_func)
+      use QXD_data, only: qxd_Q, qxd_s, qxd_zeta0, qxd_zetaq, qxd_neff0
+      implicit none
+      integer       , intent(in)    :: m_size, atom_of_func(:)
+      real(kind=8)  , intent(in)    :: pos(:,:), Smat(:,:)
+      real(kind=8)  , intent(out)   :: energ_d
+      type(operator), intent(inout) :: fock
+      
+      integer      :: iatom, jatom, n_qm, n_tot, ifunct, jfunct
+      real(kind=8) :: dist_ij, zeta_i, zeta_j, zeta_ij, delta_ij, delta_ji, &
+                      dzeta_ij, ddelta_ij, ddelta_ji
+      real(kind=8), allocatable :: f_mat, dEd_dQ
+
+      energ_d = 0.0D0
+      n_qm  = size(qxd_Q,1)
+      n_tot = size(qxd_s,1)
+      allocate(f_mat(m_size, m_size), dEd_dQ(n_qm))
+      call fock%Gets_data_AO(f_mat)
+
+      do iatom = 1, n_qm
+         do jatom = n_qm, n_tot
+            ! First part - energy contributions.
+            ! Eq. 17.
+            alpha_i  = qxd_alpha0(iatom) * exp(- qxd_alphaq(iatom) * qxd_Q(iatom))
+            alpha_j  = qxd_alpha0(jatom)
+
+            ! Eqs. 22, 23 and 16.
+            c6_ij = c6_ab(alpha_i, alpha_j, qxd_neff0(iatom), qxd_neff0(iatom),&
+                          qxd_Q(iatom))
+            
+            ! Eqs. 15 and 20.          
+            zeta_i   = qxd_zeta0(iatom) * exp(- qxd_zetaq(iatom) * qxd_Q(iatom))
+            zeta_j   = qxd_zeta0(jatom)
+            dist_ij  = dist(pos(iatom,:), pos(jatom,:))
+
+            delta_ij = delta_ab(zeta_i, zeta_j, dist_ij)
+            delta_ji = delta_ab(zeta_j, zeta_i, dist_ij)
+            
+            ! Eqs. 25 and 24.
+            b_ij  = b_ab(zeta_i, zeta_j, delta_ij, delta_ji, dist_ij)
+            s6_ij = s6_ab(b_ab, dist_ij)
+
+            ! Eq. 19.
+            energ_d = energ_d - s6_ij * c6_ij / (dist_ij ** 6)
+
+            ! Second part - Fock contributions. These are obtained by
+            ! separating dE/dRho as dE/dZi * dZi/dQi * dQi/dRho.
+            ! dZi/dQi is simply (- Zqi * Zi).
+            dzeta_ij  = dzeta_di(zeta_i, zeta_j)
+            ddelta_ij = ddelta_di(zeta_i, zeta_j, dist_ij, delta_ij)
+            ddelta_ji = ddelta_dj(zeta_j, zeta_i, dist_ij, delta_ji)
+
+            dEd_dQ(iatom) = zeta_ij  * (ddelta_ij - ddelta_ji) + &
+                            dzeta_ij * (delta_ij  - delta_ji)
+            dEd_dQ(iatom) = dEd_dQ(iatom) * qxd_zetaq(iatom) * zeta_i &
+                            * qxd_s(iatom)  * qxd_s(jatom)
+         enddo
+      enddo
+
+      ! Adds fock contributions to fock matrix.
+      do ifunct = 1, M
+         do jfunct = ifunct, M
+            if (atom_of_func(ifunct) == atom_of_func(jfunct)) then
+               f_mat(ifunct, jfunct) = f_mat(ifunct,jfunct) + &
+                                       dEd_dQ(atom_of_func(ifunct)) * &
+                                       Smat(ifunct, jfunct)
+            else
+               f_mat(ifunct, jfunct) = f_mat(ifunct,jfunct) + &
+                                       dEd_dQ(atom_of_func(ifunct)) * &
+                                       Smat(ifunct, jfunct) * 0.5D0
+            endif
+            f_mat(jfunct, ifunct) = f_mat(ifunct, jfunct)
+         enddo
+      enddo
+      call fock%Sets_data_AO(f_mat)
+
+      deallocate(f_mat, dEd_dQ)
+   end subroutine qxd_fock_d
 
    !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
    !%% HELPER FUNCTIONS %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
@@ -218,6 +311,48 @@ contains
       return
    end function delta_ab
 
+   function c6_ab(a_i, a_j, neff_i, neff_j, q_i) result(c6_out)
+      implicit none
+      real(kind=8), intent(in) :: a_i, a_j, neff_i, neff_j, q_i
+      real(kind=8)             :: c6_out, eta_i, eta_j
+
+      eta_i = sqrt((neff_i - q_i) / a_i)
+      eta_j = sqrt(neff_j / a_j)
+
+      c6_out = 1.5D0 * a_i * a_j * eta_i * eta_j / (eta_i + eta_j)
+      return
+   end function c6_ab
+
+   function b_ab(z_i, z_j, d_ij, d_ji, r_ij) result(b_out)
+      ! This function is not properly written in the original paper.
+      ! Write it in Wolfram and take the result (checked manually, it's good).
+      implicit none
+      real(kind=8), intent(in) :: a_i, a_j, d_ij, d_ji, r_ij
+      real(kind=8)             :: b_out
+
+      b_out = (z_i * exp(-z_j * r_ij) - z_j * exp(-z_i * r_ij))
+      b_out = b_out * (z_i * z_i - z_j * z_j) / (r_ij * (d_ij - d_ji))
+      b_out = b_out + 1.0D0 / r_ij + (z_i * d_ij - z_j * d_ji) / (d_ij - d_ji)
+      return
+   end function b_ab
+
+   function s6_ab(b_ij, r_ij) result(s6_out)
+      ! The factorial summation in this function is written explicitely in
+      ! order to make it more efficient. It goes from k=0 to k=6.
+      implicit none
+      real(kind=8), intent(in) :: b_ij, r_ij
+      real(kind=8)             :: s6_out, br_ij
+      
+      br_ij  = b_ij * r_ij
+      s6_out = 0.00833333D0 * (br_ij**5) + 0.001388888D0 * (br_ij**6)
+      s6_out = 0.04166666D0 * (br_ij**4) + 0.166666666D0 * (br_ij**3) + s6_out
+      s6_out = 0.5D0        * (br_ij**2) + br_ij + 1.0D0              + s6_out
+      s6_out = 1.0D0 - exp(-br_ij) * s6_out
+      return
+   end function s6_ab
+
+   !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
+   !%% DERIVATIVES %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
    ! Derives Zij only with respect to Zi.
    function dzeta_di(z_i, z_j) result(dzeta_out)
       implicit none
