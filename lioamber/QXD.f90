@@ -120,26 +120,53 @@ contains
 
    !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
    !%% FOCK - ENERGY TERMS %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
-   ! Adds exchange corrections to atomic-basis Fock matrix, and outputs energy
-   ! term E_x.
-   subroutine qxd_fock_x(energ_x, fock_op, m_size, pos, Smat, atom_of_func)
-      use QXD_data, only: qxd_Q, qxd_s, qxd_zeta0, qxd_zetaq
+   ! Calculates Fock and energy terms. The only inputs needed outside those in !
+   ! the QXD module are atomic positions, the overlap matrix, and an array     !
+   ! containing to which atom belongs a given atomic function.                 !
+   subroutine qxd_fock(qxd_energ, fock_op, pos, Smat, atom_of_func)
       implicit none
       integer       , intent(in)    :: m_size, atom_of_func(:)
       real(kind=8)  , intent(in)    :: pos(:,:), Smat(:,:)
+      real(kind=8)  , intent(out)   :: qxd_energ
+      type(operator), intent(inout) :: fock_op
+
+      integer      :: m_size
+      real(kind=8) :: qxd_ex, qxd_ed
+      real(kind=8), allocatable :: fock(:,:)
+
+      qxd_energ = 0.0D0
+      qxd_ex    = 0.0D0
+      qxd_ed    = 0.0D0
+      m_size    = size(Smat,1)
+      allocate(fock(m_size, m_size))
+      call fock_op%Gets_data_AO(fock)
+
+      call qxd_fock_x(qxd_ex, fock, m_size, pos, Smat, atom_of_func)
+      call qxd_fock_d(qxd_ed, fock, m_size, pos, Smat, atom_of_func)
+      qxd_energ = qxd_ex + qxd_ed
+
+      call fock_op%Sets_data_AO(fock)
+      deallocate(fock)
+   end subroutine qxd_fock
+
+   ! Adds exchange corrections to atomic-basis Fock matrix, and outputs energy
+   ! term E_x.
+   subroutine qxd_fock_x(energ_x, fock, m_size, pos, Smat, atom_of_func)
+      use QXD_data, only: qxd_Q, qxd_s, qxd_zeta0, qxd_zetaq
+      implicit none
+      integer       , intent(in)    :: m_size, atom_of_func(:)
+      real(kind=8)  , intent(in)    :: pos(:,:), Smat(:,:), fock(:,:)
       real(kind=8)  , intent(out)   :: energ_x
-      type(operator), intent(inout) :: fock
       
       integer      :: iatom, jatom, n_qm, n_tot, ifunct, jfunct
       real(kind=8) :: dist_ij, zeta_i, zeta_j, zeta_ij, delta_ij, delta_ji, &
                       dzeta_ij, ddelta_ij, ddelta_ji
-      real(kind=8), allocatable :: f_mat, dEx_dQ
+      real(kind=8), allocatable :: dEx_dQ(:)
 
       energ_x = 0.0D0
-      n_qm  = size(qxd_Q,1)
-      n_tot = size(qxd_s,1)
-      allocate(f_mat(m_size, m_size), dEx_dQ(n_qm))
-      call fock%Gets_data_AO(f_mat)
+      n_qm    = size(qxd_Q,1)
+      n_tot   = size(qxd_s,1)
+      allocate(dEx_dQ(n_qm))
 
       do iatom = 1, n_qm
          do jatom = n_qm, n_tot
@@ -179,41 +206,39 @@ contains
       do ifunct = 1, M
          do jfunct = ifunct, M
             if (atom_of_func(ifunct) == atom_of_func(jfunct)) then
-               f_mat(ifunct, jfunct) = f_mat(ifunct,jfunct) + &
-                                       dEx_dQ(atom_of_func(ifunct)) * &
-                                       Smat(ifunct, jfunct)
+               fock(ifunct, jfunct) = fock(ifunct,jfunct) + &
+                                      dEx_dQ(atom_of_func(ifunct)) * &
+                                      Smat(ifunct, jfunct)
             else
-               f_mat(ifunct, jfunct) = f_mat(ifunct,jfunct) + &
-                                       dEx_dQ(atom_of_func(ifunct)) * &
-                                       Smat(ifunct, jfunct) * 0.5D0
+               fock(ifunct, jfunct) = fock(ifunct,jfunct) + &
+                                      dEx_dQ(atom_of_func(ifunct)) * &
+                                      Smat(ifunct, jfunct) * 0.5D0
             endif
-            f_mat(jfunct, ifunct) = f_mat(ifunct, jfunct)
+            fock(jfunct, ifunct) = fock(ifunct, jfunct)
          enddo
       enddo
-      call fock%Sets_data_AO(f_mat)
-
-      deallocate(f_mat, dEx_dQ)
+      deallocate(dEx_dQ)
    end subroutine qxd_fock_x
 
    ! Adds dispersion corrections to atomic-basis Fock matrix, and outputs energy
    ! term E_d.
-   subroutine qxd_fock_d(energ_x, fock_op, m_size, pos, Smat, atom_of_func)
-      use QXD_data, only: qxd_Q, qxd_s, qxd_zeta0, qxd_zetaq, qxd_neff0
+   subroutine qxd_fock_d(energ_d, fock, m_size, pos, Smat, atom_of_func)
+      use QXD_data, only: qxd_Q, qxd_s, qxd_zeta0, qxd_zetaq, qxd_neff0, &
+                          qxd_alpha0, qxd_alphaq
       implicit none
       integer       , intent(in)    :: m_size, atom_of_func(:)
-      real(kind=8)  , intent(in)    :: pos(:,:), Smat(:,:)
+      real(kind=8)  , intent(in)    :: pos(:,:), Smat(:,:), fock(:,:)
       real(kind=8)  , intent(out)   :: energ_d
-      type(operator), intent(inout) :: fock
       
       integer      :: iatom, jatom, n_qm, n_tot, ifunct, jfunct
       real(kind=8) :: dist_ij, zeta_i, zeta_j, delta_ij, delta_ji, &
-                      eta_i, eta_j, c6_ij, &
-                      ddelta_ij, ddelta_ji, dc6_ij
-      real(kind=8), allocatable :: f_mat, dEd_dQ
+                      eta_i, eta_j, c6_ij, b_ij, s6_ij, ddelta_ij, &
+                      ddelta_ji, dc6_ij, db_ij, ds6_ij
+      real(kind=8), allocatable :: dEd_dQ(:)
 
       energ_d = 0.0D0
-      n_qm  = size(qxd_Q,1)
-      n_tot = size(qxd_s,1)
+      n_qm    = size(qxd_Q,1)
+      n_tot   = size(qxd_s,1)
       allocate(f_mat(m_size, m_size), dEd_dQ(n_qm))
       call fock%Gets_data_AO(f_mat)
 
@@ -250,16 +275,12 @@ contains
             ddelta_ij = ddelta_di(zeta_i, zeta_j, dist_ij, delta_ij)
             ddelta_ji = ddelta_dj(zeta_j, zeta_i, dist_ij, delta_ji)
 
+            dc6_ij = dc6_dqi(alpha_i, qxd_alphaq(iatom), eta_i, eta_j, c6_ij)
+            db_ij  = db_dqi(zeta_i, zeta_j, delta_ij, delta_ji, dist_ij, &
+                            b_ij, qxd_zetaq(iatom), ddelta_ij, ddelta_ji)
+            ds6_ij = ds6_dqi(b_ij, dist_ij, db_ij)
 
-
-
-
-
-
-            dEd_dQ(iatom) = zeta_ij  * (ddelta_ij - ddelta_ji) + &
-                            dzeta_ij * (delta_ij  - delta_ji)
-            dEd_dQ(iatom) = dEd_dQ(iatom) * qxd_zetaq(iatom) * zeta_i &
-                            * qxd_s(iatom)  * qxd_s(jatom)
+            dEd_dQ(iatom) = - (s6_ij * dc6_ij + c6_ij * ds6_ij) / (dist_ij **6)
          enddo
       enddo
 
@@ -267,20 +288,19 @@ contains
       do ifunct = 1, M
          do jfunct = ifunct, M
             if (atom_of_func(ifunct) == atom_of_func(jfunct)) then
-               f_mat(ifunct, jfunct) = f_mat(ifunct,jfunct) + &
-                                       dEd_dQ(atom_of_func(ifunct)) * &
-                                       Smat(ifunct, jfunct)
+               fock(ifunct, jfunct) = fock(ifunct,jfunct) + &
+                                      dEd_dQ(atom_of_func(ifunct)) * &
+                                      Smat(ifunct, jfunct)
             else
-               f_mat(ifunct, jfunct) = f_mat(ifunct,jfunct) + &
-                                       dEd_dQ(atom_of_func(ifunct)) * &
-                                       Smat(ifunct, jfunct) * 0.5D0
+               fock(ifunct, jfunct) = fock(ifunct,jfunct) + &
+                                      dEd_dQ(atom_of_func(ifunct)) * &
+                                      Smat(ifunct, jfunct) * 0.5D0
             endif
-            f_mat(jfunct, ifunct) = f_mat(ifunct, jfunct)
+            fock(jfunct, ifunct) = fock(ifunct, jfunct)
          enddo
       enddo
-      call fock%Sets_data_AO(f_mat)
 
-      deallocate(f_mat, dEd_dQ)
+      deallocate(dEd_dQ)
    end subroutine qxd_fock_d
 
    !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
@@ -404,4 +424,34 @@ contains
       return
    end function dc6_dqi
 
+   ! Derives b_ac with respect to Qi.
+   function db_dqi(z_i, z_j, d_ij, d_ji, r_ij, b_ij, z_qi, dd_ij, dd_ji) &
+            result(db_out)
+      implicit none
+      real(kind=8), intent(in) :: z_i, z_j, d_ij, d_ji, r_ij, b_ij, z_qi, dd_ij, dd_ji
+      real(kind=8)             :: db_out
+
+      ! First term: db_ac/dzeta_a * dzeta_a/dQ_a.
+      db_out = (3.0D0 * z_i * z_i - z_j * z_j) * exp(- d_ij * z_j)        + &
+               ((z_i * z_i - z_j * z_j) * z_j * r_ij - 2.0D0 * z_i * z_j) * &
+               exp(- d_ij * z_i)
+      db_out = - z_qi * z_i * db_out / (r_ij * (d_ij - d_ji))
+
+      ! Second term: db_ac/ddelta_ac * ddelta_ac/dQ_a
+      db_out = db_out + dd_ij * (z_i - b_ij + 1.0D0 / r_ij) / (d_ij - d_ji)
+
+      ! Third term: db_ac/ddelta_ca * ddelta_ca/dQ_a
+      db_out = db_out + dd_ji * (b_ij - z_j - 1.0D0 / r_ij) / (d_ij - d_ji)
+      return
+   end function db_dqi
+
+   function ds6_dqi(b_ij, r_ij, db_ij) result(ds6_out)
+      implicit none
+      real(kind=8), intent(in) :: r_ij, b_ij, db_ij
+      real(kind=8)             :: ds6_out
+
+      ds6_out = ((b_ij * r_ij) ** 6) * r_ij * 0.001388888D0
+      ds6_out = ds6_out * exp(- r_ij * b_ij) * db_ij
+
+   end function ds6_dqi
 end module QXD_subs
