@@ -43,7 +43,7 @@ contains
       if (allocated(qxd_alphaq)) deallocate(qxd_alphaq)
 
       allocate(qxd_s(n_tot)     ); qxd_s      = 0.0D0
-      allocate(qxd_neff0(n_qm)  ); qxd_neff0  = 0.0D0
+      allocate(qxd_neff0(n_tot) ); qxd_neff0  = 0.0D0
       allocate(qxd_zeta0(n_tot) ); qxd_zeta0  = 0.0D0
       allocate(qxd_zetaq(n_tot) ); qxd_zetaq  = 0.0D0
       allocate(qxd_alpha0(n_tot)); qxd_alpha0 = 0.0D0
@@ -87,7 +87,8 @@ contains
    ! LJ parameters MUST be in atomic units; with epsilon(i) being
    ! sqrt(epsilon(i,i)), and sigma(i) being Rmin(i,i) / 2.
    subroutine qxd_set_mm_params(n_qm, n_mm, LJ_epsilon, LJ_sigma, atom_z)
-      use QXD_data, only: qxd_s, qxd_zeta0, qxd_zetaq, qxd_alpha0, qxd_alphaq
+      use QXD_data, only: qxd_s, qxd_zeta0, qxd_zetaq, qxd_alpha0, qxd_alphaq,&
+                          qxd_neff0
       use QXD_refs, only: ref_G, ref_neff0
       implicit none
       integer     , intent(in) :: n_qm, n_mm, atom_z(:)
@@ -98,10 +99,10 @@ contains
       do iatom = n_qm, n_qm + n_mm
          qxd_s(iatom)      = 9.4423D0 * (LJ_epsilon(iatom) ** 0.4111D0) * &
                                         (LJ_sigma(iatom)   ** 2.8208D0)
-         qxd_zeta0(iatom)  = 3.7893D0 * (LJ_epsilon(iatom) ** -0.0192D0) * &
-                                        (LJ_sigma(iatom)   ** -0.7249D0)
-         qxd_alpha0(iatom) = cbrt(LJ_epsilon(iatom) * LJ_sigma(iatom) ** 6)
-         qxd_alpha0(iatom) = ref_G(atom_z(iatom)) * (qxd_alpha0(iatom) ** 2)
+         qxd_zeta0(iatom)  = 3.7893D0 * (LJ_epsilon(iatom) ** (-0.0192D0)) * &
+                                        (LJ_sigma(iatom)   ** (-0.7249D0))
+         qxd_alpha0(iatom) = (LJ_epsilon(iatom) ** 2.0D0/3.0D0) * (LJ_sigma(iatom) ** 4)
+         qxd_alpha0(iatom) = ref_G(atom_z(iatom)) * qxd_alpha0(iatom)
 
          qxd_zetaq(iatom)  = 0.0D0
          qxd_alphaq(iatom) = 0.0D0
@@ -125,8 +126,9 @@ contains
    ! the QXD module are atomic positions, the overlap matrix, and an array     !
    ! containing to which atom belongs a given atomic function.                 !
    subroutine qxd_fock(qxd_energ, fock_op, pos, Smat, atom_of_func)
+      use typedef_operator, only: operator
       implicit none
-      integer       , intent(in)    :: m_size, atom_of_func(:)
+      integer       , intent(in)    :: atom_of_func(:)
       real(kind=8)  , intent(in)    :: pos(:,:), Smat(:,:)
       real(kind=8)  , intent(out)   :: qxd_energ
       type(operator), intent(inout) :: fock_op
@@ -156,8 +158,9 @@ contains
       use QXD_data, only: qxd_Q, qxd_s, qxd_zeta0, qxd_zetaq
       implicit none
       integer       , intent(in)    :: m_size, atom_of_func(:)
-      real(kind=8)  , intent(in)    :: pos(:,:), Smat(:,:), fock(:,:)
+      real(kind=8)  , intent(in)    :: pos(:,:), Smat(:,:)
       real(kind=8)  , intent(out)   :: energ_x
+      real(kind=8)  , intent(inout) :: fock(:,:)
       
       integer      :: iatom, jatom, n_qm, n_tot, ifunct, jfunct
       real(kind=8) :: dist_ij, zeta_i, zeta_j, zeta_ij, delta_ij, delta_ji, &
@@ -204,8 +207,8 @@ contains
       enddo
 
       ! Adds fock contributions to fock matrix (eqs. 27-28).
-      do ifunct = 1, M
-         do jfunct = ifunct, M
+      do ifunct = 1, m_size
+         do jfunct = ifunct, m_size
             if (atom_of_func(ifunct) == atom_of_func(jfunct)) then
                fock(ifunct, jfunct) = fock(ifunct,jfunct) + &
                                       dEx_dQ(atom_of_func(ifunct)) * &
@@ -228,20 +231,21 @@ contains
                           qxd_alpha0, qxd_alphaq
       implicit none
       integer       , intent(in)    :: m_size, atom_of_func(:)
-      real(kind=8)  , intent(in)    :: pos(:,:), Smat(:,:), fock(:,:)
+      real(kind=8)  , intent(in)    :: pos(:,:), Smat(:,:)
       real(kind=8)  , intent(out)   :: energ_d
+      real(kind=8)  , intent(inout) :: fock(:,:)
       
       integer      :: iatom, jatom, n_qm, n_tot, ifunct, jfunct
       real(kind=8) :: dist_ij, zeta_i, zeta_j, delta_ij, delta_ji, &
-                      eta_i, eta_j, c6_ij, b_ij, s6_ij, ddelta_ij, &
-                      ddelta_ji, dc6_ij, db_ij, ds6_ij
+                      eta_i, eta_j, c6_ij, b_ij, s6_ij, alpha_i,   &
+                      alpha_j, ddelta_ij, ddelta_ji, dc6_ij, db_ij,&
+                      ds6_ij
       real(kind=8), allocatable :: dEd_dQ(:)
 
       energ_d = 0.0D0
       n_qm    = size(qxd_Q,1)
       n_tot   = size(qxd_s,1)
-      allocate(f_mat(m_size, m_size), dEd_dQ(n_qm))
-      call fock%Gets_data_AO(f_mat)
+      allocate(dEd_dQ(n_qm))
 
       do iatom = 1, n_qm
          do jatom = n_qm, n_tot
@@ -251,8 +255,8 @@ contains
             alpha_j  = qxd_alpha0(jatom)
 
             ! Eqs. 22, 23 and 16.
-            eta_i = sqrt((neff_i - q_i) / a_i)
-            eta_j = sqrt(neff_j / a_j)
+            eta_i = sqrt((qxd_neff0(iatom) - qxd_Q(iatom)) / alpha_i)
+            eta_j = sqrt(qxd_neff0(jatom) / alpha_j)
             c6_ij = c6_ab(alpha_i, alpha_j, eta_i, eta_j)
             
             ! Eqs. 15 and 20.          
@@ -265,7 +269,7 @@ contains
             
             ! Eqs. 25 and 24.
             b_ij  = b_ab(zeta_i, zeta_j, delta_ij, delta_ji, dist_ij)
-            s6_ij = s6_ab(b_ab, dist_ij)
+            s6_ij = s6_ab(b_ij, dist_ij)
 
             ! Eq. 19.
             energ_d = energ_d - s6_ij * c6_ij / (dist_ij ** 6)
@@ -286,8 +290,8 @@ contains
       enddo
 
       ! Adds fock contributions to fock matrix.
-      do ifunct = 1, M
-         do jfunct = ifunct, M
+      do ifunct = 1, m_size
+         do jfunct = ifunct, m_size
             if (atom_of_func(ifunct) == atom_of_func(jfunct)) then
                fock(ifunct, jfunct) = fock(ifunct,jfunct) + &
                                       dEd_dQ(atom_of_func(ifunct)) * &
@@ -352,7 +356,7 @@ contains
       ! This function is not properly written in the original paper.
       ! Write it in Wolfram and take the result (checked manually, it's good).
       implicit none
-      real(kind=8), intent(in) :: a_i, a_j, d_ij, d_ji, r_ij
+      real(kind=8), intent(in) :: z_i, z_j, d_ij, d_ji, r_ij
       real(kind=8)             :: b_out
 
       b_out = (z_i * exp(-z_j * r_ij) - z_j * exp(-z_i * r_ij))

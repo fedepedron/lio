@@ -139,6 +139,16 @@ tmplist += dos_subs.o lionml_data.o
 $(tmplist:%.o=$(OBJPATH)/%.o) : $(OBJPATH)/dos_data.mod
 
 ################################################################################
+OBJECTS += QXD.o
+OBJECTS += QXD_refs.o
+
+tmplist := SCF.o
+$(tmplist:%.o=$(OBJPATH)/%.o) : $(OBJPATH)/QXD.o
+
+tmplist :=
+tmplist += QXD.o
+$(tmplist:%.o=$(OBJPATH)/%.o) : $(OBJPATH)/QXD_refs.o
+################################################################################
 include converger_subs/conver.mk
 OBJECTS += converger_data.o
 OBJECTS += converger_subs.o
@@ -306,7 +316,7 @@ OBJECTS += typedef_operator.o
 #
 modusrs :=
 modusrs += SCF.o converger_subs.o TD.o geometry_optim.o liomain.o CDFT.o
-modusrs += tbdft_subs.o
+modusrs += tbdft_subs.o QXD.o
 $(modusrs:%.o=$(OBJPATH)/%.o) : ${OBJPATH}/typedef_operator.mod
 ################################################################################
 OBJECTS += mask_ecp.o
