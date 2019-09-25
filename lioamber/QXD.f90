@@ -8,7 +8,7 @@
 ! does not do it by itself.                                                   !
 !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
 module QXD_data
-
+   implicit none
    real(kind=8), allocatable :: qxd_Q(:)
 
    real(kind=8), allocatable :: qxd_s(:)
@@ -20,7 +20,7 @@ module QXD_data
 
    logical :: qxd_qm_allocated = .false.
 end module QXD_data
-!%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
+
 module QXD_subs
    implicit none
 contains
@@ -88,6 +88,7 @@ contains
    ! sqrt(epsilon(i,i)), and sigma(i) being Rmin(i,i) / 2.
    subroutine qxd_set_mm_params(n_qm, n_mm, LJ_epsilon, LJ_sigma, atom_z)
       use QXD_data, only: qxd_s, qxd_zeta0, qxd_zetaq, qxd_alpha0, qxd_alphaq
+      use QXD_refs, only: ref_G, ref_neff0
       implicit none
       integer     , intent(in) :: n_qm, n_mm, atom_z(:)
       real(kind=8), intent(in) :: LJ_epsilon(:), LJ_sigma(:)
@@ -100,7 +101,7 @@ contains
          qxd_zeta0(iatom)  = 3.7893D0 * (LJ_epsilon(iatom) ** -0.0192D0) * &
                                         (LJ_sigma(iatom)   ** -0.7249D0)
          qxd_alpha0(iatom) = cbrt(LJ_epsilon(iatom) * LJ_sigma(iatom) ** 6)
-         qxd_alpha0(iatom) = qxd_G(atom_z(iatom)) * (qxd_alpha0(iatom) ** 2)
+         qxd_alpha0(iatom) = ref_G(atom_z(iatom)) * (qxd_alpha0(iatom) ** 2)
 
          qxd_zetaq(iatom)  = 0.0D0
          qxd_alphaq(iatom) = 0.0D0
