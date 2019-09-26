@@ -6,6 +6,12 @@
 !   Additional subroutines are included in order to substract classical       !
 ! Lennard-Jones contributions from energies and forces if the MM software     !
 ! does not do it by itself.                                                   !
+!                                                                             !
+! ADDITIONAL NOTE:                                                            !
+!    This code is not designed to consider QXD interactions between QM-QM or  !
+! MM-MM. The last case is not relevant (should be the same as usual LJ), but  !
+! the QM-QM interactions would require additional calculations for dE/dQ in   !
+! case they are implemented.                                                  !
 !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
 module QXD_data
    implicit none
@@ -164,13 +170,14 @@ contains
       
       integer      :: iatom, jatom, n_qm, n_tot, ifunct, jfunct
       real(kind=8) :: dist_ij, zeta_i, zeta_j, zeta_ij, delta_ij, delta_ji, &
-                      dzeta_ij, ddelta_ij, ddelta_ji
+                      dzeta_ij, ddelta_ij, ddelta_ji, dEx
       real(kind=8), allocatable :: dEx_dQ(:)
 
       energ_x = 0.0D0
       n_qm    = size(qxd_Q,1)
       n_tot   = size(qxd_s,1)
       allocate(dEx_dQ(n_qm))
+      dEx_dQ = 0.0D0
 
       do iatom = 1, n_qm
          do jatom = n_qm, n_tot
@@ -178,31 +185,41 @@ contains
             ! Eq. 15.
             zeta_i  = qxd_zeta0(iatom) * exp(- qxd_zetaq(iatom) * qxd_Q(iatom))
             zeta_j  = qxd_zeta0(jatom)
+            dist_ij = dist(pos(iatom,:), pos(jatom,:))
 
-            ! Eq. 21.
-            zeta_ij = zeta_ab(zeta_i, zeta_j)
+            if (abs(zeta_i - zeta_j) > 1D-10) then
+               ! Eq. 21.
+               zeta_ij = zeta_ab(zeta_i, zeta_j)
 
-            ! Eq. 20.
-            dist_ij  = dist(pos(iatom,:), pos(jatom,:))
-            delta_ij = delta_ab(zeta_i, zeta_j, dist_ij)
-            delta_ji = delta_ab(zeta_j, zeta_i, dist_ij)
+               ! Eq. 20.
+               delta_ij = delta_ab(zeta_i, zeta_j, dist_ij)
+               delta_ji = delta_ab(zeta_j, zeta_i, dist_ij)
 
-            ! Eq. 18.
-            energ_x = energ_x + qxd_s(iatom) * qxd_s(jatom) * zeta_ij * &
-                                (delta_ij - delta_ji)
+               ! Eq. 18.
+               energ_x = energ_x + qxd_s(iatom) * qxd_s(jatom) * zeta_ij * &
+                                   (delta_ij - delta_ji)
 
-            ! Second part - Fock contributions. These are obtained by
-            ! separating dE/dRho as dE/dZi * dZi/dQi * dQi/dRho.
-            ! dZi/dQi is simply (- Zqi * Zi). The "-" is ommited since
-            ! afterwards dQi/dRho < 0, so it gets cancelled.
-            dzeta_ij  = dzeta_di(zeta_i, zeta_j)
-            ddelta_ij = ddelta_di(zeta_i, zeta_j, dist_ij, delta_ij)
-            ddelta_ji = ddelta_dj(zeta_j, zeta_i, dist_ij, delta_ji)
+               ! Second part - Fock contributions. These are obtained by
+               ! separating dE/dRho as dE/dZi * dZi/dQi * dQi/dRho.
+               ! dZi/dQi is simply (- Zqi * Zi). The "-" is ommited since
+               ! afterwards dQi/dRho < 0, so it gets cancelled.
+               dzeta_ij  = dzeta_di(zeta_i, zeta_j)
+               ddelta_ij = ddelta_di(zeta_i, zeta_j, dist_ij, delta_ij)
+               ddelta_ji = ddelta_dj(zeta_j, zeta_i, dist_ij, delta_ji)
 
-            dEx_dQ(iatom) = zeta_ij  * (ddelta_ij - ddelta_ji) + &
-                            dzeta_ij * (delta_ij  - delta_ji)
-            dEx_dQ(iatom) = dEx_dQ(iatom) * qxd_zetaq(iatom) * zeta_i &
-                            * qxd_s(iatom)  * qxd_s(jatom)
+               dEx = zeta_ij  * (ddelta_ij - ddelta_ji) + &
+                     dzeta_ij * (delta_ij  - delta_ji)
+               dEx_dQ(iatom) = dEx_dQ(iatom) + dEx * qxd_zetaq(iatom) * zeta_i &
+                                                   * qxd_s(iatom) * qxd_s(jatom)
+            else
+               ! Eq. 26. Case Zi = Zj.
+               zeta_ij = same_zeta(zeta_i, dist_ij)
+               energ_x = energ_x + qxd_s(iatom) * qxd_s(jatom) * zeta_ij
+
+               dzeta_ij = dsame_zeta(zeta_i, dist_ij, zeta_ij)
+               dEx_dQ(iatom) = qxd_zetaq(iatom) * zeta_i * dzeta_ij * &
+                               qxd_s(iatom) * qxd_s(jatom) + dEx_dQ(iatom)
+            endif
          enddo
       enddo
 
@@ -239,13 +256,14 @@ contains
       real(kind=8) :: dist_ij, zeta_i, zeta_j, delta_ij, delta_ji, &
                       eta_i, eta_j, c6_ij, b_ij, s6_ij, alpha_i,   &
                       alpha_j, ddelta_ij, ddelta_ji, dc6_ij, db_ij,&
-                      ds6_ij
+                      ds6_ij, dEd
       real(kind=8), allocatable :: dEd_dQ(:)
 
       energ_d = 0.0D0
       n_qm    = size(qxd_Q,1)
       n_tot   = size(qxd_s,1)
       allocate(dEd_dQ(n_qm))
+      dEd_dQ = 0.0D0
 
       do iatom = 1, n_qm
          do jatom = n_qm, n_tot
@@ -285,7 +303,8 @@ contains
                             b_ij, qxd_zetaq(iatom), ddelta_ij, ddelta_ji)
             ds6_ij = ds6_dqi(b_ij, dist_ij, db_ij)
 
-            dEd_dQ(iatom) = - (s6_ij * dc6_ij + c6_ij * ds6_ij) / (dist_ij **6)
+            dEd_dQ(iatom) = dEd_dQ(iatom) - &
+                            (s6_ij * dc6_ij + c6_ij * ds6_ij) / (dist_ij **6)
          enddo
       enddo
 
@@ -320,6 +339,16 @@ contains
       zeta_out = (z_i ** 3) * (z_j ** 3) / zeta_out
       return
    end function zeta_ab
+
+   function same_zeta(z_i, r_ij) result(zeta_out)
+      implicit none
+      real(kind=8), intent(in) :: z_i, r_ij
+      real(kind=8)             :: zeta_out
+
+      zeta_out = 3.0D0 + 3.0D0 * r_ij * z_i + r_ij * r_ij * z_i * z_i
+      zeta_out = 0.001657864D0 * z_i * z_i * z_i * exp(- z_i * r_ij) * zeta_out
+      return
+   end function same_zeta
 
    function dist(r_i, r_j) result(d_out)
       implicit none
@@ -359,9 +388,15 @@ contains
       real(kind=8), intent(in) :: z_i, z_j, d_ij, d_ji, r_ij
       real(kind=8)             :: b_out
 
-      b_out = (z_i * exp(-z_j * r_ij) - z_j * exp(-z_i * r_ij))
-      b_out = b_out * (z_i * z_i - z_j * z_j) / (r_ij * (d_ij - d_ji))
-      b_out = b_out + 1.0D0 / r_ij + (z_i * d_ij - z_j * d_ji) / (d_ij - d_ji)
+      if (abs(z_i - z_j) > 1D-10) then
+         b_out = (z_i * exp(-z_j * r_ij) - z_j * exp(-z_i * r_ij))
+         b_out = b_out * (z_i * z_i - z_j * z_j) / (r_ij * (d_ij - d_ji))
+         b_out = 1.0D0/r_ij + (z_i * d_ij - z_j * d_ji) / (d_ij - d_ji) - b_out
+      else
+         b_out = z_i * r_ij
+         b_out = z_i * (b_out * (1.0D0 + b_out)) / &
+                       (b_out * (3.0D0 + b_out) + 3.0D0)
+      endif
       return
    end function b_ab
 
@@ -393,6 +428,21 @@ contains
       dzeta_out = - 3.0D0 * (z_j ** 3) * (z_i * z_i) * dzeta_out
       return
    end function
+
+   ! Derives Eq. 26 with respect to Zi.
+   function dsame_zeta(z_i, r_ij, z_ij) result(dzeta_out)
+      implicit none
+      real(kind=8), intent(in) :: z_i, r_ij, z_ij
+      real(kind=8)             :: dzeta_out
+   
+      ! Derives the polinomial.
+      dzeta_out = 9.0D0 + 12.0D0 * r_ij * z_i + 5.0D0 * r_ij * r_ij * z_i * z_i
+      dzeta_out = 0.001657864D0 * z_i * z_i * exp(- z_i * r_ij) * dzeta_out
+
+      ! Derives the exponential.
+      dzeta_out = dzeta_out - r_ij * z_ij
+      return
+   end function dsame_zeta
 
    ! Derives dij with respect to Zi.
    function ddelta_di(z_i, z_j, d_ij, delta_ij) result(ddelta_out)
@@ -434,19 +484,29 @@ contains
             result(db_out)
       implicit none
       real(kind=8), intent(in) :: z_i, z_j, d_ij, d_ji, r_ij, b_ij, z_qi, dd_ij, dd_ji
-      real(kind=8)             :: db_out
+      real(kind=8)             :: db_out, zr_ij
 
-      ! First term: db_ac/dzeta_a * dzeta_a/dQ_a.
-      db_out = (3.0D0 * z_i * z_i - z_j * z_j) * exp(- d_ij * z_j)        + &
-               ((z_i * z_i - z_j * z_j) * z_j * r_ij - 2.0D0 * z_i * z_j) * &
-               exp(- d_ij * z_i)
-      db_out = - z_qi * z_i * db_out / (r_ij * (d_ij - d_ji))
+      if (abs(z_i - z_j) > 1D-10) then
+         ! First term: db_ac/dzeta_a * dzeta_a/dQ_a.
+         db_out = (3.0D0 * z_i * z_i - z_j * z_j) * exp(- d_ij * z_j)        +&
+                  ((z_j * z_j - z_i * z_i) * z_j * r_ij + 2.0D0 * z_i * z_j) *&
+                  exp(- d_ij * z_i)
+         db_out = - db_out / (r_ij * (d_ij - d_ji))
 
-      ! Second term: db_ac/ddelta_ac * ddelta_ac/dQ_a
-      db_out = db_out + dd_ij * (z_i - b_ij + 1.0D0 / r_ij) / (d_ij - d_ji)
+         ! Second term: db_ac/ddelta_ac * ddelta_ac/dQ_a
+         db_out = db_out + dd_ij * (z_i - b_ij + 1.0D0 / r_ij) / (d_ij - d_ji)
 
-      ! Third term: db_ac/ddelta_ca * ddelta_ca/dQ_a
-      db_out = db_out + dd_ji * (b_ij - z_j - 1.0D0 / r_ij) / (d_ij - d_ji)
+         ! Third term: db_ac/ddelta_ca * ddelta_ca/dQ_a
+         db_out = db_out + dd_ji * (b_ij - z_j - 1.0D0 / r_ij) / (d_ij - d_ji)
+      else
+         zr_ij  = z_i * r_ij
+         db_out = 3.0D0 + 3.0D0 * zr_ij + zr_ij * zr_ij
+         db_out = 2.0D0 * db_out * db_out
+         db_out = zr_ij * (6.0D0 + 12.0D0 * zr_ij + 6.0D0 * zr_ij * zr_ij +&
+                           zr_ij * zr_ij * zr_ij) / db_out
+      endif
+      db_out = - db_out * z_qi * z_i
+
       return
    end function db_dqi
 
