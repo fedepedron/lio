@@ -327,6 +327,74 @@ contains
       deallocate(dEd_dQ)
    end subroutine qxd_fock_d
 
+   ! Adds QXD terms to gradients.
+   subroutine qxd_forces(pos, forces)
+      implicit none
+      real(kind=8), intent(in)    :: pos(:,:)
+      real(kind=8), intent(inout) :: forces(:,:)
+
+      !call qxd_forces_d(pos, forces)
+      call qxd_forces_x(pos, forces)
+   end subroutine qxd_forces
+
+   ! Adds QXD repulsion terms to gradients.
+   subroutine qxd_forces_x(pos, grad)
+      use QXD_data, only: qxd_Q, qxd_s, qxd_zeta0, qxd_zetaq
+      implicit none
+      real(kind=8)  , intent(in)    :: pos(:,:)
+      real(kind=8)  , intent(inout) :: grad(:,:)
+      
+      integer      :: iatom, jatom, n_qm, n_tot, ifunct, jfunct, icrd
+      real(kind=8) :: dist_ij, zeta_i, zeta_j, zeta_ij, delta_ij, delta_ji, &
+                      ddelta_ij, ddelta_ji, dterm, fterm
+
+      n_qm    = size(qxd_Q,1)
+      n_tot   = size(qxd_s,1)
+
+      do iatom = 1, n_qm
+         do jatom = n_qm, n_tot
+            zeta_i  = qxd_zeta0(iatom) * exp(- qxd_zetaq(iatom) * qxd_Q(iatom))
+            zeta_j  = qxd_zeta0(jatom)
+            dist_ij = dist(pos(iatom,:), pos(jatom,:))
+
+            if (abs(zeta_i - zeta_j) > 1D-10) then
+               zeta_ij   = zeta_ab(zeta_i, zeta_j)
+               delta_ij  = delta_ab(zeta_i, zeta_j, dist_ij)
+               delta_ji  = delta_ab(zeta_j, zeta_i, dist_ij)
+               ddelta_ij = ddelta_dr(zeta_i, zeta_j, dist_ij, delta_ij)
+               ddelta_ji = ddelta_dr(zeta_j, zeta_i, dist_ij, delta_ji)
+
+               dterm = qxd_s(iatom) * qxd_s(jatom) * zeta_ij
+               dterm = dterm * (ddelta_ij - ddelta_ji)
+               
+               ! Adds additional common term, since dE/dxi = dE/dRij * dRij/dxi
+               ! and dRij/dxi = (xi - xj) / Rij.
+               dterm = dterm / dist_ij
+               do icrd = 1, 3
+                  fterm = dterm * (pos(iatom,icrd) - pos(jatom,icrd))
+
+                  grad(iatom,icrd) = grad(iatom,icrd) + fterm
+                  grad(jatom,icrd) = grad(jatom,icrd) - fterm
+               enddo
+            else
+               ! Case Zi = Zj.
+               dterm = same_zeta_dr(zeta_i, dist_ij)
+
+               ! Adds additional common term, since dE/dxi = dE/dRij * dRij/dxi
+               ! and dRij/dxi = (xi - xj) / Rij.
+               dterm = dterm / dist_ij
+               do icrd = 1, 3
+                  fterm = dterm * (pos(iatom,icrd) - pos(jatom,icrd))
+
+                  grad(iatom,icrd) = grad(iatom,icrd) + fterm
+                  grad(jatom,icrd) = grad(jatom,icrd) - fterm
+               enddo
+            endif
+         enddo
+      enddo
+
+   end subroutine qxd_forces_x
+
    !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
    !%% HELPER FUNCTIONS %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
    function zeta_ab(z_i, z_j) result(zeta_out)
@@ -519,4 +587,27 @@ contains
       ds6_out = ds6_out * exp(- r_ij * b_ij) * db_ij
 
    end function ds6_dqi
+
+   !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
+   !%% GRADIENTS AND FORCES %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
+   function ddelta_dr(z_i, z_j, r_ij, d_ij) result(ddelta_out)
+      implicit none
+      real(kind=8), intent(in) :: z_i, z_j, r_ij, d_ij
+      real(kind=8)             :: ddelta_out
+
+      ddelta_out = (z_i * z_i - z_j * z_j) * z_j * exp(- z_i * r_ij) / r_ij
+      ddelta_out = ddelta_out - d_ij * (z_i + 1.0D0 / r_ij)
+      return
+   end function ddelta_dr
+
+   function same_zeta_dr(z_i, r_ij) result(zeta_out)
+      implicit none
+      real(kind=8), intent(in) :: z_i, r_ij
+      real(kind=8)             :: zeta_out
+
+      zeta_out = 0.001657864D0 * z_i * z_i * z_i * z_i * exp(- z_i * r_ij)
+      zeta_out = - zeta_out * z_i * r_ij * (1.0D0 + r_ij * z_i)
+      return
+   end function same_zeta_dr
+   
 end module QXD_subs
