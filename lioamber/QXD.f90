@@ -59,7 +59,7 @@ contains
    end subroutine qxd_alloc_arrays
 
    subroutine qxd_alloc_qm_arrays(n_qm)
-      use QXD_data, only: qxd_Q, qxd_neff0, qxd_qm_allocated
+      use QXD_data, only: qxd_Q, qxd_qm_allocated
       implicit none
       integer, intent(in) :: n_qm
       
@@ -256,7 +256,7 @@ contains
       real(kind=8) :: dist_ij, zeta_i, zeta_j, delta_ij, delta_ji, &
                       eta_i, eta_j, c6_ij, b_ij, s6_ij, alpha_i,   &
                       alpha_j, ddelta_ij, ddelta_ji, dc6_ij, db_ij,&
-                      ds6_ij, dEd
+                      ds6_ij
       real(kind=8), allocatable :: dEd_dQ(:)
 
       energ_d = 0.0D0
@@ -344,12 +344,12 @@ contains
       real(kind=8)  , intent(in)    :: pos(:,:)
       real(kind=8)  , intent(inout) :: grad(:,:)
       
-      integer      :: iatom, jatom, n_qm, n_tot, ifunct, jfunct, icrd
+      integer      :: iatom, jatom, n_qm, n_tot, icrd
       real(kind=8) :: dist_ij, zeta_i, zeta_j, zeta_ij, delta_ij, delta_ji, &
                       ddelta_ij, ddelta_ji, dterm, fterm
 
-      n_qm    = size(qxd_Q,1)
-      n_tot   = size(qxd_s,1)
+      n_qm  = size(qxd_Q,1)
+      n_tot = size(qxd_s,1)
 
       do iatom = 1, n_qm
          do jatom = n_qm, n_tot
@@ -392,8 +392,69 @@ contains
             endif
          enddo
       enddo
-
    end subroutine qxd_forces_x
+
+   ! Adds dispersion corrections to forces.
+   subroutine qxd_forces_d(pos, grad)
+      use QXD_data, only: qxd_Q, qxd_s, qxd_zeta0, qxd_zetaq, qxd_neff0, &
+                          qxd_alpha0, qxd_alphaq
+      implicit none
+      real(kind=8)  , intent(in)    :: pos(:,:)
+      real(kind=8)  , intent(inout) :: grad(:,:)
+            
+      integer      :: iatom, jatom, n_qm, n_tot, icrd
+      real(kind=8) :: dist_ij, zeta_i, zeta_j, delta_ij, delta_ji, &
+                      eta_i, eta_j, c6_ij, b_ij, s6_ij, alpha_i,   &
+                      alpha_j, ddelta_ij, ddelta_ji, db_ij, ds6_ij,&
+                      dterm, fterm
+
+      n_qm  = size(qxd_Q,1)
+      n_tot = size(qxd_s,1)
+
+      do iatom = 1, n_qm
+         do jatom = n_qm, n_tot
+            ! Eq. 17.
+            alpha_i  = qxd_alpha0(iatom) * exp(- qxd_alphaq(iatom) * qxd_Q(iatom))
+            alpha_j  = qxd_alpha0(jatom)
+
+            ! Eqs. 22, 23 and 16.
+            eta_i = sqrt((qxd_neff0(iatom) - qxd_Q(iatom)) / alpha_i)
+            eta_j = sqrt(qxd_neff0(jatom) / alpha_j)
+            c6_ij = c6_ab(alpha_i, alpha_j, eta_i, eta_j)
+            
+            ! Eqs. 15 and 20.          
+            zeta_i   = qxd_zeta0(iatom) * exp(- qxd_zetaq(iatom) * qxd_Q(iatom))
+            zeta_j   = qxd_zeta0(jatom)
+            dist_ij  = dist(pos(iatom,:), pos(jatom,:))
+
+            delta_ij = delta_ab(zeta_i, zeta_j, dist_ij)
+            delta_ji = delta_ab(zeta_j, zeta_i, dist_ij)
+            
+            ! Eqs. 25 and 24.
+            b_ij  = b_ab(zeta_i, zeta_j, delta_ij, delta_ji, dist_ij)
+            s6_ij = s6_ab(b_ij, dist_ij)
+
+            ! Derivatives with respect to R.
+            ddelta_ij = ddelta_di(zeta_i, zeta_j, dist_ij, delta_ij)
+            ddelta_ji = ddelta_dj(zeta_j, zeta_i, dist_ij, delta_ji)
+
+            db_ij  = db_dr(zeta_i, zeta_j, dist_ij, delta_ij, delta_ji, &
+                           ddelta_ij, ddelta_ji, b_ij)
+            ds6_ij = ds6_dr(b_ij, dist_ij, db_ij)
+
+            dterm = (6.0D0 * s6_ij / dist_ij - ds6_ij) * c6_ij / (dist_ij ** 6)
+
+            ! Adds additional common term, since dE/dxi = dE/dRij * dRij/dxi
+            ! and dRij/dxi = (xi - xj) / Rij.
+            dterm = dterm / dist_ij
+            do icrd = 1, 3
+               fterm = dterm * (pos(iatom,icrd) - pos(jatom,icrd))
+               grad(iatom,icrd) = grad(iatom,icrd) + fterm
+               grad(jatom,icrd) = grad(jatom,icrd) - fterm
+            enddo
+         enddo
+      enddo
+   end subroutine qxd_forces_d
 
    !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
    !%% HELPER FUNCTIONS %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
@@ -585,7 +646,7 @@ contains
 
       ds6_out = ((b_ij * r_ij) ** 6) * r_ij * 0.001388888D0
       ds6_out = ds6_out * exp(- r_ij * b_ij) * db_ij
-
+      return
    end function ds6_dqi
 
    !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
@@ -610,4 +671,37 @@ contains
       return
    end function same_zeta_dr
    
+   function db_dr(z_i, z_j, r_ij, d_ij, d_ji, dd_ij, dd_ji, b_ij) &
+            result(db_out)
+      implicit none
+      real(kind=8), intent(in) :: z_i, z_j, r_ij, d_ij, d_ji, dd_ij, dd_ji, &
+                                  b_ij
+      real(kind=8)             :: zr_ij, db_out
+
+      if (abs(z_i - z_j) > 1D-10) then
+         db_out = (1.0D0 / r_ij + z_i) * z_j * exp(- z_i * r_ij) + &
+                  (1.0D0 / r_ij + z_j) * z_i * exp(- z_j * r_ij)
+         db_out = db_out * (z_i * z_i - z_j * z_j) /(r_ij * (d_ij - d_ji)) - &
+                  1.0D0 / (r_ij * r_ij)
+         db_out = db_out + (1.0D0 / r_ij + z_i - b_ij) * dd_ij / (dd_ij - d_ji)
+         db_out = db_out + (b_ij - 1.0D0 / r_ij - z_i) * dd_ji / (dd_ij - d_ji)
+      else
+         zr_ij  = z_i * r_ij
+         db_out = 3.0D0 + 3.0D0 * zr_ij + zr_ij * zr_ij
+         db_out = db_out * db_out
+         db_out = (3.0D0 + 6.0D0 * zr_ij + 2.0D0 * zr_ij * zr_ij) / db_out
+         db_out = z_i * z_i * db_out
+      endif
+      return
+   end function db_dr
+
+   function ds6_dr(b_ij, r_ij, db_ij) result(ds6_out)
+      implicit none
+      real(kind=8), intent(in) :: r_ij, b_ij, db_ij
+      real(kind=8)             :: ds6_out
+
+      ds6_out = (r_ij * db_ij + b_ij) * exp(- b_ij * r_ij)
+      ds6_out = ((b_ij * r_ij) ** 6) * 0.001388888D0 * ds6_out
+      return
+   end function ds6_dr
 end module QXD_subs
