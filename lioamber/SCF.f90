@@ -62,7 +62,7 @@ subroutine SCF(E, fock_aop, rho_aop, fock_bop, rho_bop)
    use basis_subs, only: neighbour_list_2e
    use lr_data, only: lresp
    use lrtddft, only: linear_response
-
+   use QXD_subs, only: qxd_fock
 !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
 
    implicit none
@@ -133,7 +133,7 @@ subroutine SCF(E, fock_aop, rho_aop, fock_bop, rho_bop)
    real*8 :: Exc         ! exchange-correlation
    real*8 :: Etrash      ! auxiliar variable
    real*8 :: Evieja      !
-
+   real(kind=8) :: E_QXD = 0.0D0 ! Energy for QXD
 
    ! Base change matrices (for ON-AO changes).
    type(cumat_r)       :: Xmat, Ymat
@@ -471,6 +471,16 @@ subroutine SCF(E, fock_aop, rho_aop, fock_bop, rho_bop)
             call construct_rhoTBDFT(M, rho_b, rho_b0 ,rhob_tbdft,niter, OPEN)
          end if
       endif
+
+
+      ! Adds QXD terms to Fock matrices.
+      if (.not. OPEN) then
+         call qxd_fock(E_QXD, r, Smat, Nuc, Iz, IzECP, ecpmode, fock_a, rho_a)
+      else
+         call qxd_fock(E_QXD, r, Smat, Nuc, Iz, IzECP, ecpmode, fock_a, rho_a,&
+                       fock_b, rho_b)
+      endif
+
 
       ! Stores matrices in operators, and sets up matrices in convergence
       ! acceleration algorithms (DIIS/EDIIS).

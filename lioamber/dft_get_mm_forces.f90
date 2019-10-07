@@ -5,6 +5,7 @@ subroutine dft_get_mm_forces(dxyzcl, dxyzqm)
                          Pmat_vec
    use basis_data, only: M
    use faint_cpu , only: int1G, intsolG
+   use qxd_subs  , only: qxd_forces
 
    implicit none
    double precision, intent(inout) :: dxyzqm(3, natom)
@@ -30,8 +31,8 @@ subroutine dft_get_mm_forces(dxyzcl, dxyzqm)
       call g2g_timer_stop('intsolG')
 
       do jatom = 1, nsol
-      do iatom = 1, 3
-        dxyzcl(iatom, jatom) = ffcl(natom + jatom, iatom)
+      do jcrd = 1, 3
+        dxyzcl(jcrd, jatom) = ffcl(natom + jatom, jcrd)
       enddo
       enddo
    else
@@ -47,11 +48,14 @@ subroutine dft_get_mm_forces(dxyzcl, dxyzqm)
       call g2g_timer_stop('aint_qmmm_forces')
 
       do jatom = 1, nsol
-      do iatom = 1, 3
-         dxyzcl(iatom,jatom) = ffcl(jatom,iatom)
+      do jcrd  = 1, 3
+         dxyzcl(jcrd,jatom) = ffcl(jatom,jcrd)
       enddo
       enddo
    endif
+
+   ! Adds QXD terms.
+   call qxd_forces(r, dxyzqm, dxyzcl, natom, nsol)   
 
    ! Accumulates the MM forces for the QM region.
    do iatom = 1, natom

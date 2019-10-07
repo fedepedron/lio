@@ -15,6 +15,9 @@
 !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%!
 module QXD_data
    implicit none
+   logical :: do_QXD = .false.
+
+
    real(kind=8), allocatable :: qxd_Q(:)
 
    real(kind=8), allocatable :: qxd_s(:)
@@ -35,11 +38,12 @@ contains
    ! Sets the arrays needed for QXD.
    subroutine qxd_alloc_arrays(n_qm, n_mm)
       use QXD_data, only: qxd_s, qxd_alpha0, qxd_alphaq, qxd_zeta0, qxd_zetaq,&
-                          qxd_neff0, qxd_qm_allocated
+                          qxd_neff0, qxd_qm_allocated, do_QXD
       implicit none
       integer, intent(in) :: n_qm, n_mm
       integer :: n_tot
 
+      if (.not. do_QXD) return
       n_tot = n_qm + n_mm
       if (allocated(qxd_s)     ) deallocate(qxd_s)
       if (allocated(qxd_neff0) ) deallocate(qxd_neff0)
@@ -72,13 +76,14 @@ contains
    ! Gets QXD parameters for the QM region.
    subroutine qxd_set_qm_params(n_qm, atom_z)
       use QXD_data, only: qxd_s, qxd_zeta0, qxd_zetaq, qxd_alpha0, qxd_alphaq,&
-                          qxd_neff0
+                          qxd_neff0, do_QXD
       use QXD_refs, only: ref_s, ref_zeta0, ref_zetaq, ref_alpha0, ref_alphaq,&
                           ref_neff0
       implicit none
       integer, intent(in) :: n_qm, atom_z(:)
       integer :: iatom
 
+      if (.not. do_QXD) return
       do iatom = 1, n_qm
          qxd_s(iatom)      = ref_s(atom_z(iatom))
          qxd_neff0(iatom)  = ref_neff0(atom_z(iatom))
@@ -94,7 +99,7 @@ contains
    ! sqrt(epsilon(i,i)), and sigma(i) being Rmin(i,i) / 2.
    subroutine qxd_set_mm_params(n_qm, n_mm, LJ_epsilon, LJ_sigma, atom_z)
       use QXD_data, only: qxd_s, qxd_zeta0, qxd_zetaq, qxd_alpha0, qxd_alphaq,&
-                          qxd_neff0
+                          qxd_neff0, do_QXD
       use QXD_refs, only: ref_G, ref_neff0
       implicit none
       integer     , intent(in) :: n_qm, n_mm, atom_z(:)
@@ -102,6 +107,7 @@ contains
 
       integer :: iatom
 
+      if (.not. do_QXD) return
       do iatom = n_qm, n_qm + n_mm
          qxd_s(iatom)      = 9.4423D0 * (LJ_epsilon(iatom) ** 0.4111D0) * &
                                         (LJ_sigma(iatom)   ** 2.8208D0)
@@ -131,32 +137,66 @@ contains
    ! Calculates Fock and energy terms. The only inputs needed outside those in !
    ! the QXD module are atomic positions, the overlap matrix, and an array     !
    ! containing to which atom belongs a given atomic function.                 !
-   subroutine qxd_fock(qxd_energ, fock_op, pos, Smat, atom_of_func)
-      use typedef_operator, only: operator
+   subroutine qxd_fock(qxd_energ, pos, Smat, atom_of_func, atom_Z, ECP_Z, &
+                       do_ecp, fock_a, rho_a, fock_b, rho_b)
+      use SCF_aux         , only: fix_densmat
+      use qxd_data        , only: do_QXD
       implicit none
-      integer       , intent(in)    :: atom_of_func(:)
-      real(kind=8)  , intent(in)    :: pos(:,:), Smat(:,:)
+      integer       , intent(in)    :: atom_of_func(:), atom_z(:), ECP_Z(:)
+      logical       , intent(in)    :: do_ecp
+      real(kind=8)  , intent(in)    :: pos(:,:), Smat(:,:), rho_a(:,:)
       real(kind=8)  , intent(out)   :: qxd_energ
-      type(operator), intent(inout) :: fock_op
+      real(kind=8)  , intent(inout) :: fock_a(:,:)
+      real(kind=8)  , intent(in)   , optional :: rho_b(:,:)
+      real(kind=8)  , intent(inout), optional :: fock_b(:,:)
 
       integer      :: m_size
       real(kind=8) :: qxd_ex, qxd_ed
-      real(kind=8), allocatable :: fock(:,:)
+      integer     , allocatable :: current_Z(:)
+      real(kind=8), allocatable :: fock(:,:), rho(:,:)
 
+      if (.not. do_QXD) return
       qxd_energ = 0.0D0
       qxd_ex    = 0.0D0
       qxd_ed    = 0.0D0
       m_size    = size(Smat,1)
-      allocate(fock(m_size, m_size))
-      call fock_op%Gets_data_AO(fock)
+      allocate(fock(m_size, m_size), rho(m_size, m_size), &
+               current_Z(size(atom_Z,1)))
+
+      rho = rho_a
+      if (present(rho_b)) rho = rho + rho_b
+      call fix_densmat(rho)
+      current_Z = atom_Z
+      if (do_ecp) current_Z = ECP_Z
+      call qxd_get_q(rho, Smat, atom_of_func, m_size, current_Z)
 
       call qxd_fock_x(qxd_ex, fock, m_size, pos, Smat, atom_of_func)
       call qxd_fock_d(qxd_ed, fock, m_size, pos, Smat, atom_of_func)
       qxd_energ = qxd_ex + qxd_ed
 
-      call fock_op%Sets_data_AO(fock)
-      deallocate(fock)
+      fock_a = fock_a + fock
+      if (present(fock_b)) fock_b = fock_b + fock
+      deallocate(fock, rho, current_Z)
    end subroutine qxd_fock
+
+
+   ! Gets Mulliken charges.
+   subroutine qxd_get_q(rho, Smat, NofM, m_size, atom_Z)
+      use QXD_data, only: qxd_Q
+      implicit none
+      integer       , intent(in)    :: NofM(:), atom_Z(:), m_size
+      real(kind=8)  , intent(in)    :: Smat(:,:), rho(:,:)
+     
+      integer :: ifunct, jfunct
+
+      qxd_Q = dble(atom_Z)
+      do ifunct = 1, m_size
+      do jfunct = 1, m_size
+         qxd_Q(NofM(ifunct)) = qxd_Q(NofM(ifunct)) &
+                             - rho(ifunct,jfunct) * Smat(ifunct,jfunct)
+      enddo
+      enddo
+   end subroutine qxd_get_q
 
    ! Adds exchange corrections to atomic-basis Fock matrix, and outputs energy
    ! term E_x.
@@ -328,13 +368,33 @@ contains
    end subroutine qxd_fock_d
 
    ! Adds QXD terms to gradients.
-   subroutine qxd_forces(pos, forces)
+   subroutine qxd_forces(pos, dxyzqm, dxyzcl, n_qm, n_cl)
+      use qxd_data, only: do_QXD
       implicit none
+      integer     , intent(in)    :: n_qm, n_cl
       real(kind=8), intent(in)    :: pos(:,:)
-      real(kind=8), intent(inout) :: forces(:,:)
+      real(kind=8), intent(inout) :: dxyzqm(:,:), dxyzcl(:,:)
 
-      !call qxd_forces_d(pos, forces)
-      call qxd_forces_x(pos, forces)
+      real(kind=8), allocatable :: grads(:,:)
+      integer                   :: jatom, jcrd
+      if (.not. do_QXD) return
+
+      allocate(grads(n_qm + n_cl,3))
+      call qxd_forces_d(pos, grads)
+      call qxd_forces_x(pos, grads)
+
+      do jatom = 1, n_qm
+      do jcrd  = 1, 3
+         dxyzqm(jcrd, jatom) = dxyzqm(jcrd, jatom) + grads(jatom, jcrd)
+      enddo
+      enddo
+
+      do jatom = 1, n_cl
+      do jcrd  = 1, 3
+         dxyzcl(jcrd, jatom) = dxyzcl(jcrd, jatom) + grads(n_qm + jatom, jcrd)
+      enddo
+      enddo
+      deallocate(grads)
    end subroutine qxd_forces
 
    ! Adds QXD repulsion terms to gradients.

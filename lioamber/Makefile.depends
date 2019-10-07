@@ -142,7 +142,7 @@ $(tmplist:%.o=$(OBJPATH)/%.o) : $(OBJPATH)/dos_data.mod
 OBJECTS += QXD.o
 OBJECTS += QXD_refs.o
 
-tmplist := SCF.o
+tmplist := SCF.o dft_get_mm_forces.o
 $(tmplist:%.o=$(OBJPATH)/%.o) : $(OBJPATH)/QXD.o
 
 tmplist :=
@@ -316,7 +316,7 @@ OBJECTS += typedef_operator.o
 #
 modusrs :=
 modusrs += SCF.o converger_subs.o TD.o geometry_optim.o liomain.o CDFT.o
-modusrs += tbdft_subs.o QXD.o
+modusrs += tbdft_subs.o
 $(modusrs:%.o=$(OBJPATH)/%.o) : ${OBJPATH}/typedef_operator.mod
 ################################################################################
 OBJECTS += mask_ecp.o
@@ -420,7 +420,7 @@ $(tmplist:%.o=$(OBJPATH)/%.o) : $(OBJPATH)/garcha_mod.mod
 OBJECTS += SCF_aux.o
 
 tmplist :=
-tmplist += SCF.o liomain.o initial_guess.o tbdft_subs.o
+tmplist += SCF.o liomain.o initial_guess.o tbdft_subs.o qxd.o
 $(tmplist:%.o=$(OBJPATH)/%.o) : $(OBJPATH)/SCF_aux.mod
 
 ################################################################################
